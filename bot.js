@@ -5,43 +5,40 @@ import images from './images.js';
 import util from './util.js';
 import planner from './planner.js';
 import qrcode from 'qrcode-terminal';
-import fs from 'fs';
 import pkg from 'whatsapp-web.js';
-import { spawn } from 'child_process';
-import OpenAI from "openai";
-const { Client, LocalAuth, Buttons, List, MessageMedia } = pkg;
+const { Client, LocalAuth } = pkg;
 
 // Función para obtener la cantidad de miembros en la comunidad de WhatsApp
 async function obtenerCantidadMiembros() {
   try {
     const chats = await client.getChats();
-    let totalMiembros = 0;
-    
+    const miembros = new Set();
+
     for (const chat of chats) {
       if (chat.isGroup) {
         const participants = await chat.getParticipants();
-        totalMiembros += participants.length;
+        for (const participant of participants) {
+          const memberId = participant.id?._serialized;
+          if (memberId) miembros.add(memberId);
+        }
       }
     }
-    
-    return totalMiembros;
+
+    return miembros.size;
   } catch (error) {
-    throw new Error('Error al obtener la cantidad de miembros:', error);
+    throw new Error(`Error al obtener la cantidad de miembros: ${error.message}`);
   }
 }
 
-function calculateRemainingTime(targetDate) {
-    const currentDate = new Date();
-    const currentTimezoneOffset = currentDate.getTimezoneOffset();
-    const currentOffsetMilliseconds = currentTimezoneOffset * 60 * 1000;
-    const targetTimezoneOffset = -60; // CET is UTC+1
-    const targetOffsetMilliseconds = targetTimezoneOffset * 60 * 1000;
-    const totalOffsetMilliseconds = targetOffsetMilliseconds - currentOffsetMilliseconds;
-    const remainingTime = targetDate.getTime() - currentDate.getTime() + totalOffsetMilliseconds;
-    const remainingDays = Math.floor(remainingTime / (1000 * 3600 * 24));
-    const remainingHours = Math.floor((remainingTime % (1000 * 3600 * 24)) / (1000 * 3600));
-    const remainingMinutes = Math.floor((remainingTime % (1000 * 3600)) / (1000 * 60));
-    return { days: remainingDays, hours: remainingHours, minutes: remainingMinutes };
+function calculateRemainingTime(targetDate, now = new Date()) {
+  const remainingMilliseconds = Math.max(0, targetDate.getTime() - now.getTime());
+  const totalMinutes = Math.floor(remainingMilliseconds / 60000);
+
+  return {
+    days: Math.floor(totalMinutes / 1440),
+    hours: Math.floor((totalMinutes % 1440) / 60),
+    minutes: totalMinutes % 60,
+  };
 }
 
 const client = new Client({
@@ -65,14 +62,14 @@ client.on('message', async (message) => {
   const isVip = config.vips.includes(author);
 
    // Verificar si el mensaje es el comando !report
-  if (message.body.toLowerCase() === '!report') {
+  if (message.body?.trim().toLowerCase() === '!report' && isVip) {
     try {
       // Obtener la cantidad de miembros en la comunidad de WhatsApp
       const cantidadMiembros = await obtenerCantidadMiembros();
 
       // Enviar la cantidad de miembros al canal de Discord
       const modroom = await client.getChatById(config.modRoom);
-      modroom.sendMessage(`Hay ${cantidadMiembros} miembros en la comunidad de WhatsApp.`);
+      await modroom.sendMessage(`Hay ${cantidadMiembros} miembros en la comunidad de WhatsApp.`);
     } catch (error) {
       console.error('Error al obtener la cantidad de miembros:', error);
       await client.sendMessage(message.from, '¡Ups! Hubo un error al obtener la cantidad de miembros.');
@@ -88,7 +85,7 @@ client.on('message', async (message) => {
 
   // Verificar si el mensaje es el comando !group
 // Verificar si el mensaje es el comando !group
-if (message.body.toLowerCase() === '!group') {
+if (message.body?.trim().toLowerCase() === '!group' && isVip) {
   // Función para obtener la lista de grupos y sus IDs
   async function getGroupList() {
     try {
@@ -116,44 +113,35 @@ if (message.body.toLowerCase() === '!group') {
 
 
 
-     //Countdown command
+     // Countdown dates must be set as ISO 8601 UTC values in the environment.
+if (message.body?.trim().toLowerCase() === '!countdown') {
+  const targetDates = [
+    process.env.TML_WEEK_1_DATE,
+    process.env.TML_WEEK_2_DATE,
+  ].map((value) => (value ? new Date(value) : null));
 
-if (message.body.match(/!countdown/gi)) {
-     // Get the current date and time when the command is triggered
-     const currentDate = new Date();
-     const currentFormattedTime = currentDate.toLocaleString('en-US', { timeZone: 'CET', hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false });
-     console.log(`Command "!countdown" triggered at: ${currentDate.toLocaleString()} (${currentFormattedTime} CET)`);
+  if (targetDates.some((date) => !date || Number.isNaN(date.getTime()))) {
+    await client.sendMessage(
+      message.from,
+      'El countdown no está configurado. Define TML_WEEK_1_DATE y TML_WEEK_2_DATE en formato ISO 8601 UTC.'
+    );
+    return;
+  }
 
-     const currentYear = currentDate.getFullYear();
-     const targetDate1 = new Date(Date.UTC(currentYear, 6, 19, 15, 0, 0)); // July 19 of the current year, at 17:00 (5:00 PM) CET
-     const targetDate2 = new Date(Date.UTC(currentYear, 6, 26, 15, 0, 0)); // July 26 of the current year, at 17:00 (5:00 PM) CET
+  const labels = ['W1', 'W2'];
+  const countdownMessages = targetDates.map((date, index) => {
+    const { days, hours, minutes } = calculateRemainingTime(date);
+    const localDate = date.toLocaleString('es-MX', {
+      timeZone: 'Europe/Brussels',
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
+    return `Tomorrowland ${labels[index]}: faltan ${days} días, ${hours} horas y ${minutes} minutos (${localDate}, hora de Bélgica).`;
+  });
 
-     if (currentDate.getMonth() > 6 || (currentDate.getMonth() === 6 && currentDate.getDate() > 19)) {
-         targetDate1.setUTCFullYear(currentYear + 1);
-     }
-
-     if (currentDate.getMonth() > 6 || (currentDate.getMonth() === 6 && currentDate.getDate() > 26)) {
-         targetDate2.setUTCFullYear(currentYear + 1);
-     }
-
-     console.log(`Current Date: ${currentDate.toLocaleString()} (${currentFormattedTime} CET)`);
-     console.log(`Target Date 1: ${targetDate1.toLocaleString()} CET`);
-     console.log(`Target Date 2: ${targetDate2.toLocaleString()} CET`);
-
-     const { days: days1, hours: hours1, minutes: minutes1 } = calculateRemainingTime(targetDate1);
-     const messageTime1 = targetDate1.toLocaleString('en-US', { timeZoneName: 'short', hour: 'numeric', minute: 'numeric', hour12: true });
-     const messageText1 = `There are ${days1} days, ${hours1} hours, and ${minutes1} minutes left until Tomorrowland W1 (July 19, 2024, 5:00 PM CET).`;
-
-
-     const { days: days2, hours: hours2, minutes: minutes2 } = calculateRemainingTime(targetDate2);
-     const messageTime2 = targetDate2.toLocaleString('en-US', { timeZoneName: 'short', hour: 'numeric', minute: 'numeric', hour12: true });
-     const messageText2 = ` There are ${days2} days, ${hours2} hours, and ${minutes2} minutes left until Tomorrowland W2 (July 26, 2024, 5:00 PM CET).`;
-
-     const combinedMessage = `${messageText1}\n\&\n${messageText2}`;
-
-     await client.sendMessage(message.from, combinedMessage);
+  await client.sendMessage(message.from, countdownMessages.join('\\n'));
 }
-     
+
    //Mensajes que necesitan mencionc
     
   if (message.mentionedIds.includes(config.me)) {
@@ -204,10 +192,10 @@ ${util.karmaList(config.karma)}`
   }
 
 if (message.body.startsWith('!status') && isVip) {
-  let blacklistNames = Object.keys(config.blacklist).map(number => names[number] || number).join(', ');
-  let mutelistNames = Object.keys(config.mutelist).map(number => names[number] || number).join(', ');
-  let trustlistNames = Object.keys(config.trustlist).map(number => names[number] || number).join(', ');
-  let vipsNames = Object.keys(config.vips).map(number => names[number] || number).join(', ');
+  let blacklistNames = util.phoneList(config.blacklist);
+  let mutelistNames = util.phoneList(config.mutelist);
+  let trustlistNames = util.phoneList(config.trustlist);
+  let vipsNames = util.phoneList(config.vips);
 
   client.sendMessage(
     config.modRoom,
@@ -250,7 +238,7 @@ Vips: ${vipsNames}
     if (message.hasQuotedMsg) {
       const flaggedMessage = await message.getQuotedMessage()
       const flaggedAuthor = flaggedMessage.author || flaggedMessage.from
-      config.blacklist = config.blacklist.filter((user) => user != quotedAuthor)
+      config.blacklist = config.blacklist.filter((user) => user !== flaggedAuthor)
     }
 
     message.mentionedIds.forEach((mention) => {
@@ -380,10 +368,6 @@ Vips: ${vipsNames}
 
   var spamScore = spam.getSpamScore(message.body)
 
-  if (author.startsWith('254')) {
-    spamScore += 100
-  }
-
   if (spamScore >= 20) {
     message.delete(true)
     config.karma[author] = (config.karma[author] || 0) + spamScore
@@ -426,7 +410,7 @@ If you think it is a mistake, send a message to an admin to clear your karma lev
   }
 
 
-  if (config.karma[author] >= karmaThreshold || author.startsWith('254') || author.startsWith('92')) {
+  if ((config.karma[author] || 0) >= karmaThreshold) {
   const senderContact = await message.getContact();
     
     try {
